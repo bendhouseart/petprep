@@ -14,4 +14,12 @@ docker-build:
 	docker build --rm -t $(tag) \
 	--build-arg BUILD_DATE=`date -u +"%Y-%m-%dT%H:%M:%SZ"` \
 	--build-arg VCS_REF=`git rev-parse --short HEAD` \
-	--build-arg VERSION=`hatch version` .
+	--build-arg VERSION=`hatch version` . 
+
+docker-build-dont-download:
+	docker build --rm -t $(tag) \
+	--build-arg BUILD_DATE=`date -u +"%Y-%m-%dT%H:%M:%SZ"` \
+	--build-arg VCS_REF=`git rev-parse --short HEAD` \
+	--build-arg VERSION=`hatch version` . \
+	--build-arg USE_LOCAL_FREESURFER="True" \
+	--build-arg USE_LOCAL_AFNI="True"

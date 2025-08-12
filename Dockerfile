@@ -41,6 +41,10 @@ RUN uvx --from build pyproject-build --installer uv -w /src
 FROM ${BASE_IMAGE} AS downloader
 # Bump the date to current to refresh curl/certificates/etc
 RUN echo "2023.07.20"
+
+# Copy all dependency binaries to the base stage
+COPY dependency_binaries/ /dependency_binaries/
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
                     binutils \
@@ -51,10 +55,22 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # FreeSurfer 7.4.1
+ENV FREESURFER_VERSION="7.4.1"
+
+# copy exclude lists
 FROM downloader AS freesurfer
 COPY docker/files/freesurfer7.4.1-exclude.txt /usr/local/etc/freesurfer7.4.1-exclude.txt
-RUN curl -sSL https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/7.4.1/freesurfer-linux-ubuntu22_amd64-7.4.1.tar.gz \
-     | tar zxv --no-same-owner -C /opt --exclude-from=/usr/local/etc/freesurfer7.4.1-exclude.txt
+
+ARG USE_LOCAL_FREESURFER
+RUN echo USE_LOCAL_FREESURFER=${USE_LOCAL_FREESURFER}
+
+RUN if [ "$USE_LOCAL_FREESURFER" = "True" ] && [ -f /dependency_binaries/freesurfer-linux-ubuntu22_amd64-${FREESURFER_VERSION}.tar.gz ]; then \
+        echo "Using local freesurfer binaries."; \
+        tar zxv --no-same-owner -C /opt --exclude-from=/usr/local/etc/freesurfer${FREESURFER_VERSION}-exclude.txt -f /dependency_binaries/freesurfer-linux-ubuntu22_amd64-${FREESURFER_VERSION}.tar.gz; \
+    else \
+        echo "Using freesurfer binaries from surfer.nmr.mgh.harvard.edu."; \
+        curl -L --progress-bar https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${FREESURFER_VERSION}/freesurfer-linux-ubuntu22_amd64-${FREESURFER_VERSION}.tar.gz | tar zxv --no-same-owner -C /opt --exclude-from=/usr/local/etc/freesurfer${FREESURFER_VERSION}-exclude.txt; \
+    fi
 
 # Set FREESURFER_HOME before installing MCR
 ENV FREESURFER_HOME="/opt/freesurfer"
@@ -66,9 +82,19 @@ RUN /opt/freesurfer/bin/fs_install_mcr R2019b
 FROM downloader AS afni
 # Bump the date to current to update AFNI
 RUN echo "2023.07.20"
-RUN mkdir -p /opt/afni-latest \
-    && curl -fsSL --retry 5 https://afni.nimh.nih.gov/pub/dist/tgz/linux_openmp_64.tgz \
-    | tar -xz -C /opt/afni-latest --strip-components 1 \
+
+ARG USE_LOCAL_AFNI
+RUN echo USE_LOCAL_AFNI=${USE_LOCAL_AFNI}
+
+RUN mkdir -p /opt/afni-latest && \
+    if [ -f /dependency_binaries/linux_openmp_64.tgz ] && [ "$USE_LOCAL_AFNI" = "True" ]; then \
+        echo "Using local AFNI binaries."; \
+    else \
+        echo "Downloading AFNI binaries from afni.nimh.nih.gov."; \
+        curl -fsSL --retry 5 https://afni.nimh.nih.gov/pub/dist/tgz/linux_openmp_64.tgz -o /dependency_binaries/linux_openmp_64.tgz; \
+    fi && \
+    tar -xz -C /opt/afni-latest -f /dependency_binaries/linux_openmp_64.tgz \
+    --strip-components 1 \
     --exclude "linux_openmp_64/*.gz" \
     --exclude "linux_openmp_64/funstuff" \
     --exclude "linux_openmp_64/shiny" \
@@ -82,6 +108,8 @@ RUN mkdir -p /opt/afni-latest \
         -name "3dUnifize" -or \
         -name "3dAutomask" -or \
         -name "3dvolreg" \) -delete
+
+RUN rm -rf /dependency_binaries
 
 # PETPVC
 FROM downloader AS petpvc
@@ -209,7 +237,7 @@ ENV PATH="/opt/afni-latest:$PATH" \
 RUN useradd -m -s /bin/bash -G users petprep
 WORKDIR /home/petprep
 ENV HOME="/home/petprep" \
-    LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+    LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu"
 
 COPY --from=micromamba /bin/micromamba /bin/micromamba
 COPY --from=micromamba /opt/conda/envs/petprep /opt/conda/envs/petprep
@@ -218,15 +246,17 @@ ENV MAMBA_ROOT_PREFIX="/opt/conda"
 RUN micromamba shell init -s bash && \
     echo "micromamba activate petprep" >> $HOME/.bashrc
 ENV PATH="/opt/conda/envs/petprep/bin:$PATH" \
-    CPATH="/opt/conda/envs/petprep/include:$CPATH" \
+    CPATH="/opt/conda/envs/petprep/include" \
     LD_LIBRARY_PATH="/opt/conda/envs/petprep/lib:$LD_LIBRARY_PATH"
 
-# Precaching atlases
-COPY scripts/fetch_templates.py fetch_templates.py
-RUN python fetch_templates.py && \
-    rm fetch_templates.py && \
-    find $HOME/.cache/templateflow -type d -exec chmod go=u {} + && \
-    find $HOME/.cache/templateflow -type f -exec chmod go=u {} +
+# Precaching atlases - using local templates
+RUN cp -r /dependency_binaries/templateflow $HOME/.cache/templateflow 2>/dev/null || echo "No local templates found"
+RUN if [ -d "$HOME/.cache/templateflow" ]; then \
+        find $HOME/.cache/templateflow -type d -exec chmod go=u {} + && \
+        find $HOME/.cache/templateflow -type f -exec chmod go=u {} +; \
+    else \
+        echo "No templateflow directory found, will download templates during runtime"; \
+    fi
 
 # FSL environment
 ENV LANG="C.UTF-8" \

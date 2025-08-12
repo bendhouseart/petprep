@@ -33,3 +33,9 @@ dist/
 # Additional
 .ipynb_checkpoints/
 _version.py
+
+# Locally stored binaries used to speed up Docker build
+dependency_binaries/
+freesurfer-linux-*tar.gz
+freesurfer-*.deb
+freesurfer-*.rpm
